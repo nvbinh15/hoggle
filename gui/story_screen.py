@@ -171,6 +171,10 @@ class StoryScreen(QWidget):
 
     def on_control_clicked(self):
         """Handle main control button click (Next/Start/Try Again)."""
+        if self.next_btn.text() == "Exit Game":
+            self.exit_game()
+            return
+
         step = self.story_manager.get_current_step()
         if not step:
             return
@@ -409,7 +413,10 @@ class StoryScreen(QWidget):
             # No auto-advance - user must click Continue to proceed
         else:
             self.set_status_message("Congratulations! You have completed the game!", "success")
-            QTimer.singleShot(5000, self.exit_game)
+            self.next_btn.setText("Exit Game")
+            self.next_btn.setVisible(True)
+            self.next_btn.setEnabled(True)
+            self.next_btn.setFocus()
 
     def next_level(self):
         self.auto_retry_timer.stop()

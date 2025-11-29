@@ -8,7 +8,6 @@ from enum import Enum
 import math
 import time
 import os
-import trimesh
 
 
 class SpellType(Enum):
@@ -45,7 +44,7 @@ class SpellEngine:
         self.recording_start_time: Optional[float] = None
         self.identification_pending: bool = False
         self.identified_object: Optional[str] = None
-        self.model_mesh: Optional[trimesh.Trimesh] = None
+        self.cursor_image: Optional[np.ndarray] = None
         self.cursor_model_rotation: float = 0.0
         self.cursor_model_position: Optional[Tuple[int, int]] = None
         
@@ -65,7 +64,7 @@ class SpellEngine:
             self.recording_start_time = None
             self.cursor_path = []
             self.identified_object = None
-            self.model_mesh = None
+            self.cursor_image = None
         
         if spell_type == SpellType.WINGARDIUM_LEVIOSA:
             # Start object at bottom center
@@ -117,7 +116,7 @@ class SpellEngine:
             self.recording_start_time = time.time()
             self.identification_pending = False
             self.identified_object = None
-            self.model_mesh = None
+            self.cursor_image = None
             self.cursor_model_rotation = 0.0
             self.cursor_model_position = None
     
@@ -207,7 +206,7 @@ class SpellEngine:
                         self.cursor_model_position = wand_pixel if wand_pixel else (self.frame_width // 2, self.frame_height // 2)
             
             # Display phase: animate 3D model rotation
-            if self.identified_object and self.model_mesh:
+            if self.identified_object and self.cursor_image is not None:
                 self.cursor_model_rotation += dt * 1.0  # Rotate 1 radian per second
     
     def update_frame_size(self, width: int, height: int):
@@ -321,9 +320,18 @@ class SpellEngine:
                         if self.cursor_path:
                             cv2.circle(frame, self.cursor_path[-1], 5, (255, 255, 0), -1)
                 
-                # Display phase: render 3D model
-                if self.identified_object and self.model_mesh and self.cursor_model_position:
-                    self._render_3d_model(frame, self.model_mesh, self.cursor_model_position, self.cursor_model_rotation)
+                # Display phase: render image
+                if self.identified_object and self.cursor_image is not None and self.cursor_model_position:
+                    # Draw the image
+                    x, y = self.cursor_model_position
+                    h, w = self.cursor_image.shape[:2]
+                    
+                    # Calculate top-left position
+                    top_left_x = int(x - w / 2)
+                    top_left_y = int(y - h / 2)
+                    
+                    # Handle overlay with alpha channel
+                    self._overlay_image(frame, self.cursor_image, top_left_x, top_left_y)
                     
                     # Draw object name
                     text = self.identified_object.capitalize()
@@ -333,8 +341,8 @@ class SpellEngine:
                     text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
                     
                     # Position text above the object
-                    text_x = int(self.cursor_model_position[0] - text_size[0] / 2)
-                    text_y = int(self.cursor_model_position[1] - 180) # Above object (radius ~150 + padding)
+                    text_x = int(x - text_size[0] / 2)
+                    text_y = int(y - h / 2 - 20) # Above object with padding
                     
                     # Draw text outline (black) for better visibility
                     cv2.putText(frame, text, (text_x, text_y), font, font_scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
@@ -345,125 +353,95 @@ class SpellEngine:
     
     def load_cursor_model(self, object_name: str) -> bool:
         """
-        Load a 3D model for the CURSOR spell.
+        Load a 2D image for the CURSOR spell.
         
         Args:
             object_name: Name of the object (ball, cat, heart, pizza, star, wand)
             
         Returns:
-            True if model loaded successfully, False otherwise
+            True if image loaded successfully, False otherwise
         """
-        model_path = os.path.join(os.getcwd(), "assets", "3d", f"{object_name}.glb")
-        if not os.path.exists(model_path):
-            print(f"Model file not found: {model_path}")
+        # Try different extensions
+        extensions = ['.png', '.jpg', '.jpeg']
+        image_path = None
+        
+        for ext in extensions:
+            path = os.path.join(os.getcwd(), "assets", "images", f"{object_name}{ext}")
+            if os.path.exists(path):
+                image_path = path
+                break
+                
+        if not image_path:
+            print(f"Image file not found for object: {object_name}")
             return False
         
         try:
-            # Load GLB file using trimesh
-            scene = trimesh.load(model_path)
+            # Load image with alpha channel if possible
+            image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
             
-            # Extract mesh from scene (GLB files are scenes)
-            if isinstance(scene, trimesh.Scene):
-                # Get the first geometry from the scene
-                if len(scene.geometry) > 0:
-                    self.model_mesh = list(scene.geometry.values())[0]
-                else:
-                    print("No geometry found in scene")
-                    return False
-            elif isinstance(scene, trimesh.Trimesh):
-                self.model_mesh = scene
-            else:
-                print(f"Unexpected scene type: {type(scene)}")
+            if image is None:
+                print(f"Failed to load image: {image_path}")
                 return False
+                
+            # Resize to reasonable size (max dimension ~300px)
+            h, w = image.shape[:2]
+            max_dim = max(h, w)
+            if max_dim > 300:
+                scale = 300.0 / max_dim
+                new_w = int(w * scale)
+                new_h = int(h * scale)
+                image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
             
-            # Center and normalize the mesh
-            if self.model_mesh is not None:
-                # Center the mesh
-                self.model_mesh.vertices -= self.model_mesh.vertices.mean(axis=0)
-                # Scale to reasonable size (normalize to fit in ~200 pixel radius)
-                max_dim = self.model_mesh.vertices.max(axis=0) - self.model_mesh.vertices.min(axis=0)
-                max_extent = max(max_dim)
-                if max_extent > 0:
-                    scale = 300.0 / max_extent  # Scale to ~300 pixel radius (3x bigger)
-                    self.model_mesh.vertices *= scale
-            
-            print(f"Loaded model: {object_name}")
+            self.cursor_image = image
+            print(f"Loaded image: {object_name}")
             return True
         except Exception as e:
-            print(f"Error loading model {object_name}: {e}")
+            print(f"Error loading image {object_name}: {e}")
             return False
     
-    def _render_3d_model(self, frame: np.ndarray, mesh: trimesh.Trimesh, 
-                        position: Tuple[int, int], rotation: float) -> None:
+    def _overlay_image(self, background: np.ndarray, foreground: np.ndarray, x: int, y: int) -> None:
         """
-        Software renderer for 3D models using Painter's algorithm.
+        Overlay a foreground image onto a background image at (x, y) handling alpha channel.
         
         Args:
-            frame: BGR image frame to draw on
-            mesh: Trimesh object to render
-            position: Center position (x, y) in pixel coordinates
-            rotation: Rotation angle in radians around Z axis
+            background: Background image (BGR) - modified in place
+            foreground: Foreground image (BGRA or BGR)
+            x: Top-left x coordinate
+            y: Top-left y coordinate
         """
-        if mesh is None or len(mesh.vertices) == 0:
+        h_fg, w_fg = foreground.shape[:2]
+        h_bg, w_bg = background.shape[:2]
+        
+        if x >= w_bg or y >= h_bg:
             return
-        
-        # Create rotation matrix around Z axis
-        cos_r = math.cos(rotation)
-        sin_r = math.sin(rotation)
-        rot_matrix = np.array([
-            [cos_r, -sin_r, 0],
-            [sin_r, cos_r, 0],
-            [0, 0, 1]
-        ])
-        
-        # Rotate vertices
-        rotated_vertices = mesh.vertices @ rot_matrix.T
-        
-        # Project to 2D (orthographic projection, just drop Z)
-        # Add some perspective by scaling based on Z
-        projected_vertices = []
-        for v in rotated_vertices:
-            # Simple perspective: scale by distance from camera
-            z_offset = v[2] * 0.1  # Small perspective effect
-            scale = 1.0 + z_offset
-            x_2d = int(position[0] + v[0] * scale)
-            y_2d = int(position[1] + v[1] * scale)
-            z_depth = v[2]  # Store for depth sorting
-            projected_vertices.append((x_2d, y_2d, z_depth))
-        
-        # Get faces and calculate depths
-        faces_with_depth = []
-        for face in mesh.faces:
-            # Calculate average depth of face
-            avg_depth = sum(projected_vertices[i][2] for i in face)
-            faces_with_depth.append((avg_depth, face))
-        
-        # Sort faces by depth (back to front for Painter's algorithm)
-        faces_with_depth.sort(key=lambda x: x[0], reverse=True)
-        
-        # Draw faces
-        for depth, face in faces_with_depth:
-            # Get 2D points for this face
-            pts_2d = np.array([
-                [projected_vertices[i][0], projected_vertices[i][1]] 
-                for i in face
-            ], np.int32)
             
-            # Calculate color based on depth (lighter = closer)
-            depth_factor = (depth + 2.0) / 4.0  # Normalize to 0-1 range
-            depth_factor = max(0.3, min(1.0, depth_factor))  # Clamp
+        # Crop foreground if it goes outside background
+        x_start = max(0, x)
+        y_start = max(0, y)
+        x_end = min(w_bg, x + w_fg)
+        y_end = min(h_bg, y + h_fg)
+        
+        # Calculate source coordinates
+        fg_x_start = x_start - x
+        fg_y_start = y_start - y
+        fg_x_end = fg_x_start + (x_end - x_start)
+        fg_y_end = fg_y_start + (y_end - y_start)
+        
+        if fg_x_end <= fg_x_start or fg_y_end <= fg_y_start:
+            return
             
-            # Use a warm color (yellow/orange) for the object
-            color = (
-                int(100 * depth_factor),
-                int(200 * depth_factor),
-                int(255 * depth_factor)
-            )
+        fg_crop = foreground[fg_y_start:fg_y_end, fg_x_start:fg_x_end]
+        bg_crop = background[y_start:y_end, x_start:x_end]
+        
+        # Check if foreground has alpha channel
+        if fg_crop.shape[2] == 4:
+            alpha = fg_crop[:, :, 3] / 255.0
+            alpha_inv = 1.0 - alpha
             
-            # Draw filled polygon
-            cv2.fillPoly(frame, [pts_2d], color)
-            # Draw outline
-            cv2.polylines(frame, [pts_2d], True, (255, 255, 255), 1, cv2.LINE_AA)
+            for c in range(3):
+                bg_crop[:, :, c] = (alpha * fg_crop[:, :, c] + alpha_inv * bg_crop[:, :, c])
+        else:
+            background[y_start:y_end, x_start:x_end] = fg_crop
     
     def draw_wand(self, frame: np.ndarray, wand_tip: Optional[Tuple[int, int]], 
                   wand_base: Optional[Tuple[int, int]] = None) -> Tuple[np.ndarray, Optional[Tuple[int, int]]]:

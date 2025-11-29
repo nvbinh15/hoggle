@@ -174,9 +174,13 @@ class StoryScreen(QWidget):
         self.game_active = False
         self.auto_retry_timer.stop()
         self.success_timer.stop()
-        if self.verification_thread and self.verification_thread.isRunning():
-            self.verification_thread.wait()
         if self.verification_thread:
+            try:
+                self.verification_thread.finished.disconnect()
+            except:
+                pass
+            if self.verification_thread.isRunning():
+                self.verification_thread.wait(5000)
             self.verification_thread.deleteLater()
             self.verification_thread = None
         
@@ -277,9 +281,10 @@ class StoryScreen(QWidget):
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(0)
         
+        # Don't delete the thread here - it's still running speak_feedback()
+        # Instead, connect to the finished signal for cleanup
         if self.verification_thread:
-            self.verification_thread.deleteLater()
-            self.verification_thread = None
+            self.verification_thread.finished.connect(self._cleanup_verification_thread)
         
         if not self.game_active:
             return
@@ -293,6 +298,12 @@ class StoryScreen(QWidget):
                 "error"
             )
             self.schedule_spell_detection(delay_ms=1200)
+    
+    def _cleanup_verification_thread(self):
+        """Clean up the verification thread after it finishes."""
+        if self.verification_thread:
+            self.verification_thread.deleteLater()
+            self.verification_thread = None
 
     def handle_practice_success(self, feedback: str):
         self.level_completed = True
@@ -303,6 +314,7 @@ class StoryScreen(QWidget):
             return
         
         # Activate Visuals
+        print(f"[DEBUG STORY] handle_practice_success called, activating spell: {step.required_spell}")
         self.camera_widget.get_spell_engine().activate_spell(step.required_spell, None)
         
         # Update UI
@@ -340,9 +352,14 @@ class StoryScreen(QWidget):
         self.game_active = False
         self.auto_retry_timer.stop()
         self.success_timer.stop()
-        if self.verification_thread and self.verification_thread.isRunning():
-            self.verification_thread.wait()
         if self.verification_thread:
+            # Disconnect any pending signals to avoid callbacks after cleanup
+            try:
+                self.verification_thread.finished.disconnect()
+            except:
+                pass
+            if self.verification_thread.isRunning():
+                self.verification_thread.wait(5000)  # Wait up to 5 seconds
             self.verification_thread.deleteLater()
             self.verification_thread = None
         self.is_listening = False

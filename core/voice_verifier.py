@@ -16,7 +16,6 @@ try:
     from google import genai
 except ImportError:
     import genai
-from gtts import gTTS
 
 try:
     from elevenlabs.client import ElevenLabs
@@ -62,6 +61,10 @@ class VoiceVerifier:
                 print("ElevenLabs initialized successfully.")
             except Exception as e:
                 print(f"Failed to init ElevenLabs: {e}")
+        
+        # Track current audio playback process to prevent overlapping
+        self._current_audio_process = None
+        self._current_audio_file = None
         
         # Audio recording settings
         self.channels = 1
@@ -243,23 +246,47 @@ class VoiceVerifier:
             print(error_msg)
             return False, error_msg
     
+    def stop_current_audio(self):
+        """Stop any currently playing audio feedback."""
+        if self._current_audio_process is not None:
+            try:
+                self._current_audio_process.terminate()
+                self._current_audio_process.wait(timeout=1)
+            except:
+                try:
+                    self._current_audio_process.kill()
+                except:
+                    pass
+            self._current_audio_process = None
+        
+        # Clean up the audio file
+        if self._current_audio_file and os.path.exists(self._current_audio_file):
+            try:
+                os.unlink(self._current_audio_file)
+            except:
+                pass
+            self._current_audio_file = None
+    
     def speak_feedback(self, text: str, lang: str = 'en') -> None:
         """
         Convert text to speech and play it (Hermione's voice feedback).
-        Uses ElevenLabs if available, falls back to gTTS.
+        Uses ElevenLabs for voice synthesis.
+        Only one feedback can play at a time - previous playback is stopped.
         
         Args:
             text: Text to speak
             lang: Language code (default: 'en')
         """
+        # Stop any currently playing audio first
+        self.stop_current_audio()
+        
         try:
             tmp_file_path = None
             
-            # Try ElevenLabs first
+            # Use ElevenLabs for voice synthesis
             if self.elevenlabs_client:
                 try:
                     # Use Charlotte (British female) or default voice
-                    # Using client.text_to_speech.convert() which is the standard method in v3+
                     audio_generator = self.elevenlabs_client.text_to_speech.convert(
                         text=text,
                         voice_id=self.elevenlabs_voice_id,
@@ -272,35 +299,42 @@ class VoiceVerifier:
                         tmp_file_path = tmp_file.name
                 except Exception as e:
                     print(f"ElevenLabs generation failed: {e}")
-                    tmp_file_path = None
-
-            # Fallback to gTTS
-            if not tmp_file_path:
-                tts = gTTS(text=text, lang=lang, slow=False)
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as tmp_file:
-                    tts.save(tmp_file.name)
-                    tmp_file_path = tmp_file.name
+                    return
+            else:
+                print("ElevenLabs client not initialized - skipping voice feedback")
+                return
             
-            # Play audio using system player
+            # Track this file for cleanup
+            self._current_audio_file = tmp_file_path
+            
+            # Play audio using system player (non-blocking with Popen)
             system = platform.system()
             if system == 'Darwin':  # macOS
-                subprocess.run(['afplay', tmp_file_path], check=False)
+                self._current_audio_process = subprocess.Popen(['afplay', tmp_file_path])
             elif system == 'Linux':
-                subprocess.run(['mpg123', tmp_file_path], check=False)
+                self._current_audio_process = subprocess.Popen(['mpg123', tmp_file_path])
             elif system == 'Windows':
-                subprocess.run(['start', tmp_file_path], shell=True, check=False)
+                self._current_audio_process = subprocess.Popen(['start', tmp_file_path], shell=True)
             else:
                 # Fallback: try common players
                 try:
-                    subprocess.run(['ffplay', '-nodisp', '-autoexit', tmp_file_path], check=False)
+                    self._current_audio_process = subprocess.Popen(['ffplay', '-nodisp', '-autoexit', tmp_file_path])
                 except:
                     print(f"Could not play audio. Please install a media player.")
+                    return
             
-            # Clean up
-            try:
-                os.unlink(tmp_file_path)
-            except:
-                pass
+            # Wait for playback to finish (blocking in this thread, but allows stopping)
+            if self._current_audio_process:
+                self._current_audio_process.wait()
+            
+            # Clean up after playback finishes
+            if tmp_file_path and os.path.exists(tmp_file_path):
+                try:
+                    os.unlink(tmp_file_path)
+                except:
+                    pass
+            self._current_audio_file = None
+            self._current_audio_process = None
                 
         except Exception as e:
             print(f"Error playing TTS: {str(e)}")
@@ -325,6 +359,7 @@ class VoiceVerifier:
     
     def release(self):
         """Release audio resources."""
+        # Stop any currently playing audio
+        self.stop_current_audio()
         # sounddevice doesn't require explicit cleanup
-        pass
 

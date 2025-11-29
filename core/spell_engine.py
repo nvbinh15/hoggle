@@ -44,9 +44,11 @@ class SpellEngine:
             spell_type: Type of spell to activate
             wand_pos: Current wand position in normalized coordinates (0-1), or None for center
         """
+        print(f"[DEBUG] activate_spell called: spell_type={spell_type}, wand_pos={wand_pos}")
         self.current_spell = spell_type
         self.spell_active = True
         self.animation_time = 0.0
+        print(f"[DEBUG] Spell activated: spell_active={self.spell_active}, current_spell={self.current_spell}")
         
         # Default to center if no wand position provided
         if wand_pos is None:
@@ -65,6 +67,7 @@ class SpellEngine:
     
     def deactivate_spell(self):
         """Deactivate current spell."""
+        print(f"[DEBUG] deactivate_spell called")
         self.spell_active = False
         self.current_spell = None
     
@@ -118,6 +121,17 @@ class SpellEngine:
         Returns:
             Frame with effects drawn
         """
+        # Debug: print every ~30 frames to avoid spam
+        if hasattr(self, '_debug_frame_count'):
+            self._debug_frame_count += 1
+        else:
+            self._debug_frame_count = 0
+        
+        should_debug = (self._debug_frame_count % 30 == 0)
+        
+        if should_debug:
+            print(f"[DEBUG] draw_effects: spell_active={self.spell_active}, current_spell={self.current_spell}, wand_pos={wand_pos}")
+        
         if not self.spell_active or self.current_spell is None:
             return frame
         
@@ -131,16 +145,23 @@ class SpellEngine:
                 )
             else:
                 # Already pixel coordinates
-                wand_pixel = wand_pos
+                wand_pixel = (int(wand_pos[0]), int(wand_pos[1]))
         else:
             wand_pixel = None
+        
+        if should_debug:
+            print(f"[DEBUG] draw_effects after conversion: wand_pixel={wand_pixel}")
         
         if self.current_spell == SpellType.LUMOS:
             # Draw glowing circle at wand tip
             if wand_pixel:
                 glow_radius = int(15 + 5 * math.sin(self.animation_time * 5.0))
+                if should_debug:
+                    print(f"[DEBUG] Drawing LUMOS glow at {wand_pixel} with radius {glow_radius}")
                 cv2.circle(frame, wand_pixel, glow_radius, (255, 255, 200), -1)
                 cv2.circle(frame, wand_pixel, glow_radius + 5, (255, 255, 100), 2)
+            elif should_debug:
+                print(f"[DEBUG] LUMOS spell active but wand_pixel is None - cannot draw glow")
         
         elif self.current_spell == SpellType.WINGARDIUM_LEVIOSA:
             # Draw floating object

@@ -117,6 +117,14 @@ class CameraThread(QThread):
             # Draw spell effects
             # Use visual tip (extended wand) if available, otherwise use tracked tip
             effect_pos = visual_tip if visual_tip else (wand_tip_normalized if landmarks else None)
+            
+            # Debug: print effect_pos periodically
+            if not hasattr(self, '_cam_debug_count'):
+                self._cam_debug_count = 0
+            self._cam_debug_count += 1
+            if self._cam_debug_count % 30 == 0:
+                print(f"[DEBUG CAM] visual_tip={visual_tip}, wand_tip_normalized={wand_tip_normalized}, effect_pos={effect_pos}")
+            
             frame = self.spell_engine.draw_effects(frame, effect_pos)
             
             # Emit processed frame

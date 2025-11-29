@@ -7,12 +7,15 @@ from typing import Optional, Tuple, List
 from enum import Enum
 import math
 import time
+import os
+import trimesh
 
 
 class SpellType(Enum):
     """Types of spells available."""
     LUMOS = "Lumos"
     WINGARDIUM_LEVIOSA = "Wingardium Leviosa"
+    CURSOR = "Cursor"
 
 
 class SpellEngine:
@@ -35,6 +38,15 @@ class SpellEngine:
         # Animation state
         self.leviosa_object_pos = None
         self.leviosa_hover_offset = 0.0
+        
+        # CURSOR spell state
+        self.cursor_path: List[Tuple[int, int]] = []
+        self.recording_start_time: Optional[float] = None
+        self.identification_pending: bool = False
+        self.identified_object: Optional[str] = None
+        self.model_mesh: Optional[trimesh.Trimesh] = None
+        self.cursor_model_rotation: float = 0.0
+        self.cursor_model_position: Optional[Tuple[int, int]] = None
         
     def activate_spell(self, spell_type: SpellType, wand_pos: Optional[Tuple[float, float]] = None):
         """
@@ -64,6 +76,15 @@ class SpellEngine:
             # Start object near wand
             self.leviosa_object_pos = (wand_pixel[0] + 50, wand_pixel[1] - 50)
             self.leviosa_hover_offset = 0.0
+        elif spell_type == SpellType.CURSOR:
+            # Initialize CURSOR recording state
+            self.cursor_path = []
+            self.recording_start_time = time.time()
+            self.identification_pending = False
+            self.identified_object = None
+            self.model_mesh = None
+            self.cursor_model_rotation = 0.0
+            self.cursor_model_position = None
     
     def deactivate_spell(self):
         """Deactivate current spell."""
@@ -104,6 +125,35 @@ class SpellEngine:
                     wand_pos[0] + 30,
                     int(wand_pos[1] - 50 + self.leviosa_hover_offset)
                 )
+        elif self.current_spell == SpellType.CURSOR:
+            # CURSOR spell logic
+            if self.recording_start_time is not None:
+                elapsed = time.time() - self.recording_start_time
+                
+                # Recording phase: first 5 seconds
+                if elapsed < 5.0:
+                    # Record wand tip positions
+                    if wand_pixel:
+                        self.cursor_path.append(wand_pixel)
+                # After 5 seconds, trigger identification
+                elif not self.identification_pending and self.identified_object is None:
+                    self.identification_pending = True
+                    # Set position for model display (center of path or last position)
+                    if self.cursor_path:
+                        # Use center of bounding box of path
+                        xs = [p[0] for p in self.cursor_path]
+                        ys = [p[1] for p in self.cursor_path]
+                        if xs and ys:
+                            self.cursor_model_position = (
+                                int(sum(xs) / len(xs)),
+                                int(sum(ys) / len(ys))
+                            )
+                    else:
+                        self.cursor_model_position = wand_pixel if wand_pixel else (self.frame_width // 2, self.frame_height // 2)
+            
+            # Display phase: animate 3D model rotation
+            if self.identified_object and self.model_mesh:
+                self.cursor_model_rotation += dt * 1.0  # Rotate 1 radian per second
     
     def update_frame_size(self, width: int, height: int):
         """Update frame dimensions."""
@@ -155,11 +205,20 @@ class SpellEngine:
         if self.current_spell == SpellType.LUMOS:
             # Draw glowing circle at wand tip
             if wand_pixel:
-                glow_radius = int(15 + 5 * math.sin(self.animation_time * 5.0))
+                # Increased base radius and amplitude for bigger, more dynamic glow
+                glow_radius = int(30 + 10 * math.sin(self.animation_time * 5.0))
                 if should_debug:
                     print(f"[DEBUG] Drawing LUMOS glow at {wand_pixel} with radius {glow_radius}")
-                cv2.circle(frame, wand_pixel, glow_radius, (255, 255, 200), -1)
-                cv2.circle(frame, wand_pixel, glow_radius + 5, (255, 255, 100), 2)
+                
+                # Draw multiple layers for a more intense, brighter glow effect
+                # Outer glow layer (largest, most transparent)
+                cv2.circle(frame, wand_pixel, glow_radius + 20, (255, 255, 150), -1)
+                # Middle glow layer
+                cv2.circle(frame, wand_pixel, glow_radius + 10, (255, 255, 200), -1)
+                # Inner bright core (pure white)
+                cv2.circle(frame, wand_pixel, glow_radius, (255, 255, 255), -1)
+                # Bright outer ring for extra visibility
+                cv2.circle(frame, wand_pixel, glow_radius + 15, (255, 255, 180), 3)
             elif should_debug:
                 print(f"[DEBUG] LUMOS spell active but wand_pixel is None - cannot draw glow")
         
@@ -187,8 +246,148 @@ class SpellEngine:
                     (255, 255, 200),
                     2
                 )
+        elif self.current_spell == SpellType.CURSOR:
+            # CURSOR spell drawing
+            if self.recording_start_time is not None:
+                elapsed = time.time() - self.recording_start_time
+                
+                # Recording phase: draw path
+                if elapsed < 5.0:
+                    if len(self.cursor_path) > 1:
+                        # Draw polyline path
+                        pts = np.array(self.cursor_path, np.int32)
+                        cv2.polylines(frame, [pts], False, (255, 255, 0), 3, cv2.LINE_AA)
+                        # Draw current point
+                        if self.cursor_path:
+                            cv2.circle(frame, self.cursor_path[-1], 5, (255, 255, 0), -1)
+                
+                # Display phase: render 3D model
+                if self.identified_object and self.model_mesh and self.cursor_model_position:
+                    self._render_3d_model(frame, self.model_mesh, self.cursor_model_position, self.cursor_model_rotation)
         
         return frame
+    
+    def load_cursor_model(self, object_name: str) -> bool:
+        """
+        Load a 3D model for the CURSOR spell.
+        
+        Args:
+            object_name: Name of the object (ball, cat, heart, pizza, star, wand)
+            
+        Returns:
+            True if model loaded successfully, False otherwise
+        """
+        model_path = os.path.join(os.getcwd(), "assets", "3d", f"{object_name}.glb")
+        if not os.path.exists(model_path):
+            print(f"Model file not found: {model_path}")
+            return False
+        
+        try:
+            # Load GLB file using trimesh
+            scene = trimesh.load(model_path)
+            
+            # Extract mesh from scene (GLB files are scenes)
+            if isinstance(scene, trimesh.Scene):
+                # Get the first geometry from the scene
+                if len(scene.geometry) > 0:
+                    self.model_mesh = list(scene.geometry.values())[0]
+                else:
+                    print("No geometry found in scene")
+                    return False
+            elif isinstance(scene, trimesh.Trimesh):
+                self.model_mesh = scene
+            else:
+                print(f"Unexpected scene type: {type(scene)}")
+                return False
+            
+            # Center and normalize the mesh
+            if self.model_mesh is not None:
+                # Center the mesh
+                self.model_mesh.vertices -= self.model_mesh.vertices.mean(axis=0)
+                # Scale to reasonable size (normalize to fit in ~200 pixel radius)
+                max_dim = self.model_mesh.vertices.max(axis=0) - self.model_mesh.vertices.min(axis=0)
+                max_extent = max(max_dim)
+                if max_extent > 0:
+                    scale = 100.0 / max_extent  # Scale to ~100 pixel radius
+                    self.model_mesh.vertices *= scale
+            
+            print(f"Loaded model: {object_name}")
+            return True
+        except Exception as e:
+            print(f"Error loading model {object_name}: {e}")
+            return False
+    
+    def _render_3d_model(self, frame: np.ndarray, mesh: trimesh.Trimesh, 
+                        position: Tuple[int, int], rotation: float) -> None:
+        """
+        Software renderer for 3D models using Painter's algorithm.
+        
+        Args:
+            frame: BGR image frame to draw on
+            mesh: Trimesh object to render
+            position: Center position (x, y) in pixel coordinates
+            rotation: Rotation angle in radians around Z axis
+        """
+        if mesh is None or len(mesh.vertices) == 0:
+            return
+        
+        # Create rotation matrix around Z axis
+        cos_r = math.cos(rotation)
+        sin_r = math.sin(rotation)
+        rot_matrix = np.array([
+            [cos_r, -sin_r, 0],
+            [sin_r, cos_r, 0],
+            [0, 0, 1]
+        ])
+        
+        # Rotate vertices
+        rotated_vertices = mesh.vertices @ rot_matrix.T
+        
+        # Project to 2D (orthographic projection, just drop Z)
+        # Add some perspective by scaling based on Z
+        projected_vertices = []
+        for v in rotated_vertices:
+            # Simple perspective: scale by distance from camera
+            z_offset = v[2] * 0.1  # Small perspective effect
+            scale = 1.0 + z_offset
+            x_2d = int(position[0] + v[0] * scale)
+            y_2d = int(position[1] + v[1] * scale)
+            z_depth = v[2]  # Store for depth sorting
+            projected_vertices.append((x_2d, y_2d, z_depth))
+        
+        # Get faces and calculate depths
+        faces_with_depth = []
+        for face in mesh.faces:
+            # Calculate average depth of face
+            avg_depth = sum(projected_vertices[i][2] for i in face)
+            faces_with_depth.append((avg_depth, face))
+        
+        # Sort faces by depth (back to front for Painter's algorithm)
+        faces_with_depth.sort(key=lambda x: x[0], reverse=True)
+        
+        # Draw faces
+        for depth, face in faces_with_depth:
+            # Get 2D points for this face
+            pts_2d = np.array([
+                [projected_vertices[i][0], projected_vertices[i][1]] 
+                for i in face
+            ], np.int32)
+            
+            # Calculate color based on depth (lighter = closer)
+            depth_factor = (depth + 2.0) / 4.0  # Normalize to 0-1 range
+            depth_factor = max(0.3, min(1.0, depth_factor))  # Clamp
+            
+            # Use a warm color (yellow/orange) for the object
+            color = (
+                int(100 * depth_factor),
+                int(200 * depth_factor),
+                int(255 * depth_factor)
+            )
+            
+            # Draw filled polygon
+            cv2.fillPoly(frame, [pts_2d], color)
+            # Draw outline
+            cv2.polylines(frame, [pts_2d], True, (255, 255, 255), 1, cv2.LINE_AA)
     
     def draw_wand(self, frame: np.ndarray, wand_tip: Optional[Tuple[int, int]], 
                   wand_base: Optional[Tuple[int, int]] = None) -> Tuple[np.ndarray, Optional[Tuple[int, int]]]:

@@ -73,6 +73,32 @@ class StoryManager:
                 step_type=StoryStepType.PRACTICE,
                 required_spell=SpellType.WINGARDIUM_LEVIOSA,
                 success_message="The rocks float aside gracefully. The courtyard opens up—training complete!",
+                next_step_id=5,
+            ),
+            # Cursor briefing + practice
+            5: StoryStep(
+                id=5,
+                title="Cursor Conjuring",
+                description=(
+                    "In the Great Hall, you discover an ancient spell that brings drawings to life. "
+                    "The Cursor spell allows you to draw a pattern in the air, and magic will identify "
+                    "what you've created—a ball, a cat, a heart, a pizza, a star, or a wand. "
+                    "Draw clearly and let your imagination guide your wand."
+                ),
+                step_type=StoryStepType.EXPLANATION,
+                required_spell=SpellType.CURSOR,
+                next_step_id=6,
+            ),
+            6: StoryStep(
+                id=6,
+                title="Practice Cursor",
+                description=(
+                    "Cast 'Cursor' and draw a pattern in the air with your wand. "
+                    "You have 5 seconds to complete your drawing. The magic will identify what you've created!"
+                ),
+                step_type=StoryStepType.PRACTICE,
+                required_spell=SpellType.CURSOR,
+                success_message="Magnificent! Your drawing has been recognized and brought to life as a 3D object!",
                 next_step_id=None,
             ),
         }

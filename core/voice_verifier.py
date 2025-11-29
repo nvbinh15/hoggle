@@ -140,6 +140,14 @@ class VoiceVerifier:
                 "you MUST mark it as correct ('is_correct': true). Be encouraging and praise their persistence."
             )
         
+        # SPECIAL RULE: Wingardium Leviosa first try failure (Leviosa vs LeviosAR)
+        if target_spell == "Wingardium Leviosa" and not is_retry:
+            system_instruction += (
+                " IMPORTANT: For this specific attempt, you MUST mark it as incorrect ('is_correct': false), "
+                "even if the pronunciation is perfect. "
+                "Tell the user: It's Levi-O-sa, not Levio-SA. Plus more specific rules to help them. Make sure to emphasize the correction."
+            )
+
         # Create prompt
         prompt = (
             f"The user is trying to cast the spell '{target_spell}'. "

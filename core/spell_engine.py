@@ -324,6 +324,22 @@ class SpellEngine:
                 # Display phase: render 3D model
                 if self.identified_object and self.model_mesh and self.cursor_model_position:
                     self._render_3d_model(frame, self.model_mesh, self.cursor_model_position, self.cursor_model_rotation)
+                    
+                    # Draw object name
+                    text = self.identified_object.capitalize()
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    font_scale = 1.5
+                    thickness = 3
+                    text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
+                    
+                    # Position text above the object
+                    text_x = int(self.cursor_model_position[0] - text_size[0] / 2)
+                    text_y = int(self.cursor_model_position[1] - 180) # Above object (radius ~150 + padding)
+                    
+                    # Draw text outline (black) for better visibility
+                    cv2.putText(frame, text, (text_x, text_y), font, font_scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
+                    # Draw text (white)
+                    cv2.putText(frame, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
         
         return frame
     
@@ -368,7 +384,7 @@ class SpellEngine:
                 max_dim = self.model_mesh.vertices.max(axis=0) - self.model_mesh.vertices.min(axis=0)
                 max_extent = max(max_dim)
                 if max_extent > 0:
-                    scale = 100.0 / max_extent  # Scale to ~100 pixel radius
+                    scale = 300.0 / max_extent  # Scale to ~300 pixel radius (3x bigger)
                     self.model_mesh.vertices *= scale
             
             print(f"Loaded model: {object_name}")

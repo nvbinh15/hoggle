@@ -36,6 +36,7 @@ class CameraThread(QThread):
     """Thread for capturing and processing video frames."""
     
     frame_ready = pyqtSignal(np.ndarray)
+    spell_identified = pyqtSignal(str)
     
     def __init__(self, hand_tracker: HandTracker, spell_engine: SpellEngine, object_identifier: Optional[ObjectIdentifier] = None):
         super().__init__()
@@ -131,8 +132,29 @@ class CameraThread(QThread):
                 self.prev_wand_tip = None
                 self.prev_wand_base = None
             
+            # Calculate extended wand tip for tracking/drawing
+            extended_tip_normalized = wand_tip_normalized
+            if wand_tip and wand_base:
+                import math
+                # Vector from base to tip
+                dx = wand_tip[0] - wand_base[0]
+                dy = wand_tip[1] - wand_base[1]
+                length = math.sqrt(dx*dx + dy*dy)
+                
+                if length > 1.0: # Avoid division by zero or noise
+                    # Extend by factor of 5 (same as visual drawing)
+                    ux = dx / length
+                    uy = dy / length
+                    extended_len = length * 5.0
+                    
+                    ext_x = wand_base[0] + ux * extended_len
+                    ext_y = wand_base[1] + uy * extended_len
+                    
+                    # Normalize back to 0-1 range for engine
+                    extended_tip_normalized = (ext_x / w, ext_y / h)
+
             # Update spell engine (pass normalized coordinates)
-            self.spell_engine.update(dt, wand_tip_normalized)
+            self.spell_engine.update(dt, extended_tip_normalized)
             
             # Reset identification_requested if spell changed or identification_pending is False
             if not hasattr(self, '_last_spell'):
@@ -151,14 +173,15 @@ class CameraThread(QThread):
             # Use visual tip (extended wand) if available, otherwise use tracked tip
             effect_pos = visual_tip if visual_tip else (wand_tip_normalized if landmarks else None)
             
-            # Debug: print effect_pos periodically
-            if not hasattr(self, '_cam_debug_count'):
-                self._cam_debug_count = 0
-            self._cam_debug_count += 1
-            if self._cam_debug_count % 30 == 0:
-                print(f"[DEBUG CAM] visual_tip={visual_tip}, wand_tip_normalized={wand_tip_normalized}, effect_pos={effect_pos}")
+            # Also pass visual tip to draw_effects if available to ensure effects align with wand
+            final_effect_pos = visual_tip_normalized = None
+            if visual_tip:
+                 # Convert back to normalized for draw_effects if it expects normalized (it handles both but prefers normalized for logic)
+                 final_effect_pos = (visual_tip[0] / w, visual_tip[1] / h)
+            elif extended_tip_normalized:
+                 final_effect_pos = extended_tip_normalized
             
-            frame = self.spell_engine.draw_effects(frame, effect_pos)
+            frame = self.spell_engine.draw_effects(frame, final_effect_pos)
             
             # Check if CURSOR spell needs identification
             if (self.spell_engine.current_spell == SpellType.CURSOR and 
@@ -200,6 +223,9 @@ class CameraThread(QThread):
         else:
             print(f"[DEBUG] Failed to load model: {object_name}")
         
+        # Emit signal
+        self.spell_identified.emit(object_name)
+        
         # Clean up thread
         if self.identification_thread:
             self.identification_thread.wait()
@@ -215,6 +241,8 @@ class CameraThread(QThread):
 
 class CameraWidget(QLabel):
     """Widget for displaying camera feed with AR overlays."""
+    
+    spell_identified = pyqtSignal(str)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -249,6 +277,7 @@ class CameraWidget(QLabel):
         
         self.camera_thread = CameraThread(self.hand_tracker, self.spell_engine, self.object_identifier)
         self.camera_thread.frame_ready.connect(self.update_frame)
+        self.camera_thread.spell_identified.connect(self.spell_identified.emit)
         
         try:
             self.camera_thread.start_capture(camera_index)

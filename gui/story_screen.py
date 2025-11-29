@@ -8,6 +8,7 @@ from PyQt6.QtGui import QFont
 
 from core.voice_verifier import VoiceVerifier
 from core.story_manager import StoryManager, StoryStepType
+from core.spell_engine import SpellType
 from gui.camera_widget import CameraWidget
 from gui.utils import SpellVerificationThread
 
@@ -103,6 +104,7 @@ class StoryScreen(QWidget):
         
         # Camera Feed
         self.camera_widget = CameraWidget()
+        self.camera_widget.spell_identified.connect(self.on_cursor_identified)
         layout.addWidget(self.camera_widget)
         
         # Status/Instruction Bar
@@ -281,6 +283,11 @@ class StoryScreen(QWidget):
         if not step or step.step_type != StoryStepType.PRACTICE:
             return
         
+        # Check for CURSOR spell to bypass verification
+        if step.required_spell == SpellType.CURSOR:
+            self.handle_cursor_sequence()
+            return
+        
         self.auto_retry_timer.stop()
         self.is_listening = True
         spell_name = step.required_spell.value
@@ -292,6 +299,49 @@ class StoryScreen(QWidget):
         self.verification_thread.recording_finished.connect(self.on_recording_finished)
         self.verification_thread.verification_complete.connect(self.on_verification_complete)
         self.verification_thread.start()
+
+    def handle_cursor_sequence(self):
+        """Handle the Cursor spell sequence (Wait -> Draw -> Identify)."""
+        self.auto_retry_timer.stop()
+        self.is_listening = True
+        
+        # 1. Wait for user to speak (simulated)
+        self.set_status_message("Listening for 'Cursor'...", "listening")
+        QTimer.singleShot(2000, self.start_cursor_drawing)
+        
+    def start_cursor_drawing(self):
+        """Start the drawing phase."""
+        if not self.game_active:
+            return
+            
+        self.set_status_message("Draw a pattern with your wand! (5 seconds)", "info")
+        self.progress_bar.setRange(0, 0) # Indeterminate
+        
+        # Activate spell to start recording
+        self.camera_widget.get_spell_engine().activate_spell(SpellType.CURSOR)
+        
+        # Schedule completion (UI update only, engine handles timing internally but good to sync)
+        QTimer.singleShot(5000, self.finish_cursor_drawing)
+        
+    def finish_cursor_drawing(self):
+        """Drawing phase finished, waiting for identification."""
+        if not self.game_active:
+            return
+        
+        self.set_status_message("Identifying your drawing...", "validating")
+        
+    def on_cursor_identified(self, object_name: str):
+        """Handle successful object identification."""
+        if not self.game_active:
+            return
+            
+        # Only proceed if we are in the right step
+        step = self.story_manager.get_current_step()
+        if not step or step.required_spell != SpellType.CURSOR:
+            return
+            
+        # Treat as success
+        self.handle_practice_success(f"You drew a {object_name}!")
 
     def on_recording_finished(self):
         """Called when audio recording is done, but verification is still in progress."""
@@ -340,7 +390,9 @@ class StoryScreen(QWidget):
         
         # Activate Visuals
         print(f"[DEBUG STORY] handle_practice_success called, activating spell: {step.required_spell}")
-        self.camera_widget.get_spell_engine().activate_spell(step.required_spell, None)
+        # Avoid resetting CURSOR spell if it was just identified and is showing the model
+        if step.required_spell != SpellType.CURSOR:
+            self.camera_widget.get_spell_engine().activate_spell(step.required_spell, None)
         
         # Update UI
         success_text = f"Success! {step.success_message}"

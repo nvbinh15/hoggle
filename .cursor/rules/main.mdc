@@ -1,0 +1,5 @@
+---
+alwaysApply: true
+---
+
+- activate environment with `source .venv/bin/activate` before running any python command

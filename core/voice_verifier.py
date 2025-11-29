@@ -105,17 +105,20 @@ class VoiceVerifier:
         
         return wav_buffer.getvalue()
     
-    def verify_spell(self, audio_data: bytes, target_spell: str) -> Tuple[bool, str]:
+    def verify_spell(self, audio_data: bytes, target_spell: str, is_retry: bool = False) -> Tuple[bool, str]:
         """
         Verify spell pronunciation using Gemini AI with Hermione persona.
         
         Args:
             audio_data: WAV audio bytes
             target_spell: The spell name to check (e.g., "Lumos", "Wingardium Leviosa")
+            is_retry: Whether this is a retry attempt (allows for more leniency)
             
         Returns:
             Tuple of (is_correct: bool, feedback_message: str)
         """
+        import json
+        
         # Convert audio to base64 for Gemini
         audio_base64 = base64.b64encode(audio_data).decode('utf-8')
         
@@ -123,18 +126,25 @@ class VoiceVerifier:
         system_instruction = (
             "You are Hermione Granger from Harry Potter. You are teaching a muggle how to cast spells. "
             "The user will attempt to pronounce a spell. Your job is to verify if they pronounced it correctly. "
-            "Be strict but helpful. If they got it wrong, correct them in Hermione's characteristic way. "
-            "For example, if they say 'Wingardium Levio-SA' instead of 'Wingardium Levi-O-sa', "
-            "you should say: 'It's Levi-O-sa, not Levio-SA!' "
-            "If they got it right, praise them enthusiastically. "
+            "You must return a JSON object with two keys: 'is_correct' (boolean) and 'feedback' (string). "
+            "Do not include markdown formatting like ```json ... ```, just the raw JSON string. "
+            "Listen carefully. If the pronunciation is correct, close, or even slightly ambiguous, set 'is_correct' to true. "
+            "Only set 'is_correct' to false if it is blatantly incorrect. "
+            "If you are tempted to say 'try again', instead accept it as correct and praise the effort. "
             "Keep your response brief and in character."
         )
+        
+        if is_retry:
+            system_instruction += (
+                " IMPORTANT: The user is struggling and retrying. Unless they stay completely silent or say something entirely unrelated, "
+                "you MUST mark it as correct ('is_correct': true). Be encouraging and praise their persistence."
+            )
         
         # Create prompt
         prompt = (
             f"The user is trying to cast the spell '{target_spell}'. "
             f"Listen to their pronunciation and tell me if they got it right. "
-            f"Provide feedback as Hermione Granger."
+            f"Remember to return JSON."
         )
         
         try:
@@ -191,42 +201,49 @@ class VoiceVerifier:
                     if 'candidates' in response_data and len(response_data['candidates']) > 0:
                         feedback = response_data['candidates'][0]['content']['parts'][0]['text']
                     else:
-                        feedback = "I couldn't verify your pronunciation. Please try again."
+                        feedback = '{"is_correct": false, "feedback": "I couldn\'t verify your pronunciation. Please try again."}'
+                
+                # Extract result text from response if not already extracted
+                if 'feedback' not in locals():
+                    if hasattr(response, 'text'):
+                        feedback = response.text
+                    elif hasattr(response, 'candidates') and len(response.candidates) > 0:
+                        feedback = response.candidates[0].content.parts[0].text
+                    elif isinstance(response, dict) and 'candidates' in response:
+                        feedback = response['candidates'][0]['content']['parts'][0]['text']
+                    else:
+                        feedback = str(response)
+                
+                # Parse JSON response
+                try:
+                    # Clean up markdown code blocks if present
+                    cleaned_text = feedback.strip()
+                    if cleaned_text.startswith("```json"):
+                        cleaned_text = cleaned_text[7:]
+                    elif cleaned_text.startswith("```"):
+                        cleaned_text = cleaned_text[3:]
+                    if cleaned_text.endswith("```"):
+                        cleaned_text = cleaned_text[:-3]
+                    cleaned_text = cleaned_text.strip()
+                    
+                    data = json.loads(cleaned_text)
+                    is_correct = data.get("is_correct", False)
+                    feedback_msg = data.get("feedback", "I couldn't verify that properly.")
+                    return is_correct, feedback_msg
+                except json.JSONDecodeError:
+                    print(f"Failed to parse JSON from Gemini: {feedback}")
+                    # Fallback to text analysis if JSON fails
                     feedback_lower = feedback.lower()
-                    is_correct = (
-                        "correct" in feedback_lower or 
-                        "right" in feedback_lower or 
-                        "well done" in feedback_lower or
-                        "excellent" in feedback_lower
-                    )
-                    if "wrong" in feedback_lower or "incorrect" in feedback_lower or "not" in feedback_lower:
-                        is_correct = False
-                    return is_correct, feedback
-                
-                # Extract feedback text from response
-                if hasattr(response, 'text'):
-                    feedback = response.text
-                elif hasattr(response, 'candidates') and len(response.candidates) > 0:
-                    feedback = response.candidates[0].content.parts[0].text
-                elif isinstance(response, dict) and 'candidates' in response:
-                    feedback = response['candidates'][0]['content']['parts'][0]['text']
-                else:
-                    feedback = str(response)
-                
-                # Determine if correct
-                feedback_lower = feedback.lower()
-                is_correct = (
-                    "correct" in feedback_lower or 
-                    "right" in feedback_lower or 
-                    "well done" in feedback_lower or
-                    "excellent" in feedback_lower or
-                    "perfect" in feedback_lower or
-                    "brilliant" in feedback_lower
-                )
-                if "wrong" in feedback_lower or "incorrect" in feedback_lower or ("not" in feedback_lower and "correct" not in feedback_lower):
-                    is_correct = False
-                
-                return is_correct, feedback
+                    
+                    # Check for explicit negatives first
+                    if "not correct" in feedback_lower or "incorrect" in feedback_lower or "wrong" in feedback_lower or "close but" in feedback_lower:
+                        return False, feedback
+                    
+                    # Check for positives
+                    if "correct" in feedback_lower or "right" in feedback_lower or "well done" in feedback_lower or "perfect" in feedback_lower or "brilliant" in feedback_lower or "excellent" in feedback_lower:
+                        return True, feedback
+                    
+                    return False, feedback
                 
             except Exception as api_error:
                 # Final fallback - provide basic feedback
@@ -339,18 +356,19 @@ class VoiceVerifier:
         except Exception as e:
             print(f"Error playing TTS: {str(e)}")
     
-    def verify_and_feedback(self, target_spell: str) -> Tuple[bool, str]:
+    def verify_and_feedback(self, target_spell: str, is_retry: bool = False) -> Tuple[bool, str]:
         """
         Record audio, verify spell, and provide both text and voice feedback.
         
         Args:
             target_spell: The spell to verify
+            is_retry: Whether this is a retry attempt
             
         Returns:
             Tuple of (is_correct: bool, feedback_message: str)
         """
         audio_data = self.record_audio()
-        is_correct, feedback = self.verify_spell(audio_data, target_spell)
+        is_correct, feedback = self.verify_spell(audio_data, target_spell, is_retry=is_retry)
         
         # Play voice feedback
         self.speak_feedback(feedback)
@@ -362,4 +380,3 @@ class VoiceVerifier:
         # Stop any currently playing audio
         self.stop_current_audio()
         # sounddevice doesn't require explicit cleanup
-

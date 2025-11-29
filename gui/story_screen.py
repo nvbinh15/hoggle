@@ -32,6 +32,7 @@ class StoryScreen(QWidget):
         self.success_timer.setSingleShot(True)
         self.success_timer.timeout.connect(self.next_level)
         
+        self.retry_count = 0
         self.init_ui()
         
     def set_status_message(self, text: str, style_type: str = "info"):
@@ -154,7 +155,7 @@ class StoryScreen(QWidget):
         
         self.next_btn = QPushButton("Next Level →")
         self.next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.next_btn.clicked.connect(self.next_level)
+        self.next_btn.clicked.connect(self.on_control_clicked)
         self.next_btn.setVisible(False)
         self.next_btn.setStyleSheet(button_style)
         self.controls_layout.addWidget(self.next_btn)
@@ -165,6 +166,19 @@ class StoryScreen(QWidget):
         
         # Keep focus for accessibility/keyboard shortcuts
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def on_control_clicked(self):
+        """Handle main control button click (Next/Start/Try Again)."""
+        step = self.story_manager.get_current_step()
+        if not step:
+            return
+
+        if self.level_completed or step.step_type == StoryStepType.EXPLANATION:
+            self.next_level()
+        else:
+            # Retry case for Practice steps
+            self.next_btn.setVisible(False)
+            self.start_listening()
 
     def start_game(self):
         """Initialize game state."""
@@ -208,6 +222,7 @@ class StoryScreen(QWidget):
         self.story_text.setText(step.description)
         self.level_completed = False
         self.is_listening = False
+        self.retry_count = 0
         self.auto_retry_timer.stop()
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(0)
@@ -216,6 +231,11 @@ class StoryScreen(QWidget):
         # Reset spell engine visuals between steps
         if self.camera_widget.spell_engine:
             self.camera_widget.spell_engine.deactivate_spell()
+            
+            # For practice steps, setup the scene (e.g., show Leviosa box)
+            if step.step_type == StoryStepType.PRACTICE and step.required_spell:
+                print(f"[DEBUG] Setting up scene for spell: {step.required_spell}")
+                self.camera_widget.spell_engine.setup_spell_scene(step.required_spell)
 
         if step.step_type == StoryStepType.EXPLANATION:
             spell_name = step.required_spell.value if step.required_spell else "the spell"
@@ -267,7 +287,8 @@ class StoryScreen(QWidget):
         self.set_status_message(f"Listening for '{spell_name}'... Speak clearly.", "listening")
         self.progress_bar.setRange(0, 0)
 
-        self.verification_thread = SpellVerificationThread(self.voice_verifier, spell_name)
+        is_retry = self.retry_count > 0
+        self.verification_thread = SpellVerificationThread(self.voice_verifier, spell_name, is_retry=is_retry)
         self.verification_thread.recording_finished.connect(self.on_recording_finished)
         self.verification_thread.verification_complete.connect(self.on_verification_complete)
         self.verification_thread.start()
@@ -292,12 +313,16 @@ class StoryScreen(QWidget):
         if is_correct:
             self.handle_practice_success(feedback)
         else:
+            self.retry_count += 1
             retry_feedback = feedback or "That wasn't quite right."
             self.set_status_message(
-                f"{retry_feedback}\nI'm still listening—just say the spell again.",
+                f"{retry_feedback}\nClick 'Try Again' to retry.",
                 "error"
             )
-            self.schedule_spell_detection(delay_ms=1200)
+            self.next_btn.setText("Try Again")
+            self.next_btn.setVisible(True)
+            self.next_btn.setEnabled(True)
+            self.next_btn.setFocus()
     
     def _cleanup_verification_thread(self):
         """Clean up the verification thread after it finishes."""
@@ -323,14 +348,13 @@ class StoryScreen(QWidget):
             success_text = f"{success_text}\n{feedback}"
         self.set_status_message(success_text, "success")
         
-        # Show Next button or Auto-advance
+        # Show Next button - wait for user to click Continue
         if step.next_step_id:
-            self.next_btn.setText("Next Spell →")
+            self.next_btn.setText("Continue →")
             self.next_btn.setVisible(True)
             self.next_btn.setEnabled(True)
             self.next_btn.setFocus()  # Move focus to next button
-            # Auto-advance after brief celebration
-            self.success_timer.start(3000)
+            # No auto-advance - user must click Continue to proceed
         else:
             self.set_status_message("Congratulations! You have completed the game!", "success")
             QTimer.singleShot(5000, self.exit_game)

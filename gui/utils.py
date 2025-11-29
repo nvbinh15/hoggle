@@ -7,10 +7,11 @@ class SpellVerificationThread(QThread):
     recording_finished = pyqtSignal()
     verification_complete = pyqtSignal(bool, str)
     
-    def __init__(self, voice_verifier: VoiceVerifier, target_spell: str):
+    def __init__(self, voice_verifier: VoiceVerifier, target_spell: str, is_retry: bool = False):
         super().__init__()
         self.voice_verifier = voice_verifier
         self.target_spell = target_spell
+        self.is_retry = is_retry
     
     def run(self):
         """Run verification."""
@@ -20,7 +21,7 @@ class SpellVerificationThread(QThread):
             self.recording_finished.emit()
             
             # Step 2: Verify
-            is_correct, feedback = self.voice_verifier.verify_spell(audio_data, self.target_spell)
+            is_correct, feedback = self.voice_verifier.verify_spell(audio_data, self.target_spell, is_retry=self.is_retry)
             
             # Step 3: Update UI before speaking so feedback text shows during audio
             self.verification_complete.emit(is_correct, feedback)

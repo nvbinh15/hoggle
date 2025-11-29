@@ -36,6 +36,7 @@ class SpellEngine:
         self.animation_time = 0.0
         
         # Animation state
+        self.leviosa_state = 'idle'  # idle, grounded, floating
         self.leviosa_object_pos = None
         self.leviosa_hover_offset = 0.0
         
@@ -48,6 +49,37 @@ class SpellEngine:
         self.cursor_model_rotation: float = 0.0
         self.cursor_model_position: Optional[Tuple[int, int]] = None
         
+    def setup_spell_scene(self, spell_type: SpellType):
+        """
+        Setup the visual scene for a spell (before activation).
+        
+        Args:
+            spell_type: Type of spell to setup
+        """
+        print(f"[DEBUG] setup_spell_scene called: spell_type={spell_type}")
+        self.current_spell = spell_type
+        self.animation_time = 0.0
+        
+        # Reset specific spell states
+        if spell_type == SpellType.CURSOR:
+            self.recording_start_time = None
+            self.cursor_path = []
+            self.identified_object = None
+            self.model_mesh = None
+        
+        if spell_type == SpellType.WINGARDIUM_LEVIOSA:
+            # Start object at bottom center
+            self.leviosa_state = 'grounded'
+            center_x = self.frame_width // 2
+            bottom_y = self.frame_height - 50
+            self.leviosa_object_pos = (center_x, bottom_y)
+            self.leviosa_hover_offset = 0.0
+            # For Leviosa, we need spell_active=True to show the grounded box
+            self.spell_active = True
+        else:
+            # For other spells (Lumos, Cursor), wait for activation to show effects
+            self.spell_active = False
+
     def activate_spell(self, spell_type: SpellType, wand_pos: Optional[Tuple[float, float]] = None):
         """
         Activate a spell effect.
@@ -59,7 +91,11 @@ class SpellEngine:
         print(f"[DEBUG] activate_spell called: spell_type={spell_type}, wand_pos={wand_pos}")
         self.current_spell = spell_type
         self.spell_active = True
-        self.animation_time = 0.0
+        
+        # If it's a new spell activation (not just scene setup), reset time
+        if spell_type != SpellType.WINGARDIUM_LEVIOSA or self.leviosa_state == 'idle':
+             self.animation_time = 0.0
+
         print(f"[DEBUG] Spell activated: spell_active={self.spell_active}, current_spell={self.current_spell}")
         
         # Default to center if no wand position provided
@@ -73,9 +109,8 @@ class SpellEngine:
         )
         
         if spell_type == SpellType.WINGARDIUM_LEVIOSA:
-            # Start object near wand
-            self.leviosa_object_pos = (wand_pixel[0] + 50, wand_pixel[1] - 50)
-            self.leviosa_hover_offset = 0.0
+            # Trigger float animation
+            self.leviosa_state = 'floating'
         elif spell_type == SpellType.CURSOR:
             # Initialize CURSOR recording state
             self.cursor_path = []
@@ -91,6 +126,7 @@ class SpellEngine:
         print(f"[DEBUG] deactivate_spell called")
         self.spell_active = False
         self.current_spell = None
+        self.leviosa_state = 'idle'
     
     def update(self, dt: float, wand_pos: Optional[Tuple[float, float]] = None):
         """
@@ -117,13 +153,32 @@ class SpellEngine:
                 wand_pixel = (int(wand_pos[0]), int(wand_pos[1]))
         
         if self.current_spell == SpellType.WINGARDIUM_LEVIOSA and self.leviosa_object_pos:
-            # Hover animation
-            self.leviosa_hover_offset = math.sin(self.animation_time * 2.0) * 10
-            if wand_pos:
-                # Keep object near wand but hovering
+            if self.leviosa_state == 'floating':
+                # Move up until we reach target height (e.g., 1/3 of screen)
+                target_y = self.frame_height // 3
+                current_x, current_y = self.leviosa_object_pos
+                
+                # Rising speed
+                rise_speed = 100 * dt # pixels per second
+                
+                if current_y > target_y:
+                    current_y -= rise_speed
+                
+                # Hover animation
+                self.leviosa_hover_offset = math.sin(self.animation_time * 2.0) * 10
+                
+                # If tracking wand, could pull towards wand x
+                # For now, keep simple vertical rise + hover
+                
                 self.leviosa_object_pos = (
-                    wand_pos[0] + 30,
-                    int(wand_pos[1] - 50 + self.leviosa_hover_offset)
+                    current_x,
+                    int(current_y)
+                )
+            elif self.leviosa_state == 'grounded':
+                # Ensure it stays at bottom (in case of resize)
+                self.leviosa_object_pos = (
+                    self.frame_width // 2,
+                    self.frame_height - 50
                 )
         elif self.current_spell == SpellType.CURSOR:
             # CURSOR spell logic
@@ -223,29 +278,34 @@ class SpellEngine:
                 print(f"[DEBUG] LUMOS spell active but wand_pixel is None - cannot draw glow")
         
         elif self.current_spell == SpellType.WINGARDIUM_LEVIOSA:
-            # Draw floating object
+            # Draw box object
             if self.leviosa_object_pos:
-                obj_size = 25
-                cv2.ellipse(
-                    frame,
-                    self.leviosa_object_pos,
-                    (obj_size, obj_size//2),
-                    0,
-                    0,
-                    360,
-                    (200, 200, 100),
-                    -1
-                )
-                cv2.ellipse(
-                    frame,
-                    self.leviosa_object_pos,
-                    (obj_size, obj_size//2),
-                    0,
-                    0,
-                    360,
-                    (255, 255, 200),
-                    2
-                )
+                box_size = 60
+                x, y = int(self.leviosa_object_pos[0]), int(self.leviosa_object_pos[1])
+                
+                # Add hover offset if floating
+                if self.leviosa_state == 'floating':
+                    y += int(self.leviosa_hover_offset)
+                
+                # Draw a crate-like box
+                # Main box body
+                top_left = (x - box_size//2, y - box_size//2)
+                bottom_right = (x + box_size//2, y + box_size//2)
+                
+                # Fill - brown wood color
+                cv2.rectangle(frame, top_left, bottom_right, (30, 70, 110), -1)
+                
+                # Border - lighter wood
+                cv2.rectangle(frame, top_left, bottom_right, (50, 90, 130), 3)
+                
+                # Cross pattern
+                cv2.line(frame, top_left, bottom_right, (40, 80, 120), 2)
+                cv2.line(frame, (x + box_size//2, y - box_size//2), (x - box_size//2, y + box_size//2), (40, 80, 120), 2)
+                
+                # Inner border
+                inset = 5
+                cv2.rectangle(frame, (top_left[0]+inset, top_left[1]+inset), (bottom_right[0]-inset, bottom_right[1]-inset), (45, 85, 125), 1)
+
         elif self.current_spell == SpellType.CURSOR:
             # CURSOR spell drawing
             if self.recording_start_time is not None:

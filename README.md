@@ -4,9 +4,8 @@ Learn to cast spells with Hermione Granger as your instructor! This interactive 
 
 ## Features
 
-- **Three Spells to Learn:**
+- **Two Spells to Learn:**
   - **Lumos**: Light up the tip of your wand
-  - **Accio**: Summon objects to you
   - **Wingardium Leviosa**: Make objects float
 
 - **Interactive Practice:**

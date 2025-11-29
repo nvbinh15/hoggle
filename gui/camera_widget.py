@@ -22,6 +22,10 @@ class CameraThread(QThread):
         self.spell_engine = spell_engine
         self.running = False
         self.cap = None
+        # Smoothing state
+        self.prev_wand_tip = None
+        self.prev_wand_base = None
+        self.smoothing_factor = 0.6  # Higher = more responsive, Lower = smoother
         
     def start_capture(self, camera_index: int = 0):
         """Start video capture."""
@@ -47,6 +51,10 @@ class CameraThread(QThread):
             # Flip frame horizontally (mirror effect)
             frame = cv2.flip(frame, 1)
             
+            # Update frame size in spell engine
+            h, w = frame.shape[:2]
+            self.spell_engine.update_frame_size(w, h)
+            
             # Calculate delta time
             current_time = time.time()
             dt = current_time - last_time
@@ -59,33 +67,57 @@ class CameraThread(QThread):
             wand_tip = None
             wand_base = None
             wand_tip_normalized = None
+            
             if landmarks:
                 # MediaPipe returns normalized coordinates (0-1)
-                wand_tip_normalized = self.hand_tracker.get_wand_position(landmarks)
-                wand_base_normalized = self.hand_tracker.get_wand_base(landmarks)
+                raw_tip_norm = self.hand_tracker.get_wand_position(landmarks)
+                raw_base_norm = self.hand_tracker.get_wand_base(landmarks)
                 
-                # Convert to pixel coordinates for drawing
-                h, w = frame.shape[:2]
-                if wand_tip_normalized:
-                    wand_tip = (
-                        int(wand_tip_normalized[0] * w),
-                        int(wand_tip_normalized[1] * h)
-                    )
-                if wand_base_normalized:
-                    wand_base = (
-                        int(wand_base_normalized[0] * w),
-                        int(wand_base_normalized[1] * h)
-                    )
+                # Apply smoothing to Tip
+                if raw_tip_norm:
+                    curr_tip_x = raw_tip_norm[0] * w
+                    curr_tip_y = raw_tip_norm[1] * h
+                    
+                    if self.prev_wand_tip:
+                        smooth_x = curr_tip_x * self.smoothing_factor + self.prev_wand_tip[0] * (1 - self.smoothing_factor)
+                        smooth_y = curr_tip_y * self.smoothing_factor + self.prev_wand_tip[1] * (1 - self.smoothing_factor)
+                        self.prev_wand_tip = (smooth_x, smooth_y)
+                    else:
+                        self.prev_wand_tip = (curr_tip_x, curr_tip_y)
+                    
+                    wand_tip = (int(self.prev_wand_tip[0]), int(self.prev_wand_tip[1]))
+                    wand_tip_normalized = (self.prev_wand_tip[0] / w, self.prev_wand_tip[1] / h)
+                
+                # Apply smoothing to Base
+                if raw_base_norm:
+                    curr_base_x = raw_base_norm[0] * w
+                    curr_base_y = raw_base_norm[1] * h
+                    
+                    if self.prev_wand_base:
+                        smooth_x = curr_base_x * self.smoothing_factor + self.prev_wand_base[0] * (1 - self.smoothing_factor)
+                        smooth_y = curr_base_y * self.smoothing_factor + self.prev_wand_base[1] * (1 - self.smoothing_factor)
+                        self.prev_wand_base = (smooth_x, smooth_y)
+                    else:
+                        self.prev_wand_base = (curr_base_x, curr_base_y)
+                    
+                    wand_base = (int(self.prev_wand_base[0]), int(self.prev_wand_base[1]))
+            else:
+                # Reset smoothing if hand lost
+                self.prev_wand_tip = None
+                self.prev_wand_base = None
             
             # Update spell engine (pass normalized coordinates)
             self.spell_engine.update(dt, wand_tip_normalized)
             
-            # Draw wand
+            # Draw wand and get visual tip
+            visual_tip = None
             if wand_tip:
-                self.spell_engine.draw_wand(frame, wand_tip, wand_base)
+                frame, visual_tip = self.spell_engine.draw_wand(frame, wand_tip, wand_base)
             
             # Draw spell effects
-            frame = self.spell_engine.draw_effects(frame, wand_tip_normalized if landmarks else None)
+            # Use visual tip (extended wand) if available, otherwise use tracked tip
+            effect_pos = visual_tip if visual_tip else (wand_tip_normalized if landmarks else None)
+            frame = self.spell_engine.draw_effects(frame, effect_pos)
             
             # Emit processed frame
             self.frame_ready.emit(frame)
@@ -111,11 +143,7 @@ class CameraWidget(QLabel):
         self.setText("Camera not started")
         
         self.hand_tracker = HandTracker()
-        # Load wand model from assets
-        import os
-        wand_path = os.path.join(os.path.dirname(__file__), '..', 'assets', 'images', 'wand.png')
-        wand_path = os.path.abspath(wand_path)
-        self.spell_engine = SpellEngine(640, 480, wand_model_path=wand_path)
+        self.spell_engine = SpellEngine(640, 480)
         self.camera_thread = None
         
     def start_camera(self, camera_index: int = 0):

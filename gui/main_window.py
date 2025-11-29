@@ -4,302 +4,323 @@ Main window for Hoggle application.
 import os
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QLabel, QStackedWidget, QTextEdit, QMessageBox
+    QLabel, QStackedWidget, QStyleOption, QStyle,
+    QGraphicsOpacityEffect, QGraphicsDropShadowEffect
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QFont
-from core.spell_engine import SpellType
-from core.voice_verifier import VoiceVerifier
-from gui.camera_widget import CameraWidget
+from PyQt6.QtCore import Qt, QEasingCurve, QPropertyAnimation, QUrl
+from PyQt6.QtGui import QFont, QPainter, QPixmap, QColor
+from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+
+from gui.story_screen import StoryScreen
 
 
-class SpellVerificationThread(QThread):
-    """Thread for spell verification to avoid blocking UI."""
-    
-    verification_complete = pyqtSignal(bool, str)
-    
-    def __init__(self, voice_verifier: VoiceVerifier, target_spell: str):
-        super().__init__()
-        self.voice_verifier = voice_verifier
-        self.target_spell = target_spell
-    
-    def run(self):
-        """Run verification."""
+class BackgroundImageScreen(QWidget):
+    """Utility widget that paints the Hogwarts background image."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        image_path = os.path.join(os.getcwd(), "assets", "images", "hogwarts.jpeg")
+        self.background_image = QPixmap(image_path)
+        if self.background_image.isNull():
+            print("Warning: Failed to load hogwarts.jpeg background.")
+
+    def paintEvent(self, event):
+        opt = QStyleOption()
+        opt.initFrom(self)
+        painter = QPainter(self)
         try:
-            is_correct, feedback = self.voice_verifier.verify_and_feedback(self.target_spell)
-            self.verification_complete.emit(is_correct, feedback)
-        except Exception as e:
-            self.verification_complete.emit(False, f"Error: {str(e)}")
+            self.style().drawPrimitive(QStyle.PrimitiveElement.PE_Widget, opt, painter, self)
+            if not self.background_image.isNull():
+                painter.drawPixmap(self.rect(), self.background_image)
+        finally:
+            painter.end()
 
 
-class SpellSelectionScreen(QWidget):
-    """Initial screen for selecting a spell to learn."""
-    
+class MainMenuScreen(BackgroundImageScreen):
+    """Welcome screen with program branding and entry button."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent_window = parent
         self.init_ui()
-    
+
     def init_ui(self):
-        """Initialize UI."""
         layout = QVBoxLayout()
-        layout.setSpacing(20)
-        layout.setContentsMargins(40, 40, 40, 40)
-        
-        # Title
-        title = QLabel("Hoggle - Learn Spells with Hermione!")
-        title.setFont(QFont("Arial", 24, QFont.Weight.Bold))
+        layout.setSpacing(40)
+        layout.setContentsMargins(80, 60, 80, 60)
+
+        layout.addStretch()
+
+        title = QLabel("Hoggle - Hogwarts for Muggle")
+        title.setFont(QFont("Arial", 40, QFont.Weight.Bold))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("color: #ffffff;")
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(35)
+        shadow.setOffset(0, 0)
+        shadow.setColor(QColor(0, 0, 0, 180))
+        title.setGraphicsEffect(shadow)
         layout.addWidget(title)
-        
-        subtitle = QLabel("Choose a spell to practice:")
-        subtitle.setFont(QFont("Arial", 14))
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(subtitle)
-        
+
         layout.addStretch()
-        
-        # Spell buttons
-        spells = [
-            ("Lumos", "Light up your wand tip", SpellType.LUMOS),
-            ("Accio", "Bring objects to you", SpellType.ACCIO),
-            ("Wingardium Leviosa", "Make objects fly", SpellType.WINGARDIUM_LEVIOSA)
-        ]
-        
-        for spell_name, description, spell_type in spells:
-            btn = QPushButton(f"{spell_name}\n{description}")
-            btn.setFont(QFont("Arial", 12))
-            btn.setMinimumHeight(80)
-            btn.clicked.connect(lambda checked, st=spell_type: self.select_spell(st))
-            layout.addWidget(btn)
-        
+
+        start_btn = QPushButton("Start")
+        start_btn.setFont(QFont("Arial", 20, QFont.Weight.Bold))
+        start_btn.setMinimumHeight(80)
+        start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        start_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #5e1a1a;
+                color: #f8f9fa;
+                border-radius: 12px;
+                border: 2px solid #f8f9fa;
+            }
+            QPushButton:hover {
+                background-color: #782020;
+            }
+            QPushButton:pressed {
+                background-color: #441313;
+            }
+        """)
+        start_btn.clicked.connect(self.start_intro_sequence)
+        layout.addWidget(start_btn)
+
         layout.addStretch()
         self.setLayout(layout)
-    
-    def select_spell(self, spell_type: SpellType):
-        """Select a spell to practice."""
+
+    def start_intro_sequence(self):
         if self.parent_window:
-            self.parent_window.show_practice_screen(spell_type)
+            self.parent_window.show_intro_sequence()
 
 
-class PracticeScreen(QWidget):
-    """Screen for practicing a spell."""
-    
+class IntroSequenceScreen(BackgroundImageScreen):
+    """Full-screen message sequence before starting spells."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent_window = parent
-        self.current_spell: SpellType = None
-        self.voice_verifier: VoiceVerifier = None
-        self.verification_thread: SpellVerificationThread = None
-        self.practice_started = False
+        self.messages = [
+            "Welcome to Hoggle — Hogwarts orientation for muggles who still call it Levio-SAH.",
+            "You'll be guided spell-by-spell. Each chapter introduces a spell, then lets you practice it.",
+            "Focus, breathe, and follow the narrator. The next spell only appears when you've mastered the current one."
+        ]
+        self.current_index = 0
+        self.active_animations = []
         self.init_ui()
-    
+
     def init_ui(self):
-        """Initialize UI."""
         layout = QVBoxLayout()
-        layout.setSpacing(10)
-        layout.setContentsMargins(20, 20, 20, 20)
-        
-        # Header with back button
-        header_layout = QHBoxLayout()
-        back_btn = QPushButton("← Back")
-        back_btn.clicked.connect(self.go_back)
-        header_layout.addWidget(back_btn)
-        header_layout.addStretch()
-        
-        self.spell_title = QLabel("")
-        self.spell_title.setFont(QFont("Arial", 18, QFont.Weight.Bold))
-        header_layout.addWidget(self.spell_title)
-        header_layout.addStretch()
-        header_layout.addWidget(QLabel(""))  # Spacer for balance
-        
-        layout.addLayout(header_layout)
-        
-        # Spell description
-        self.description = QTextEdit()
-        self.description.setReadOnly(True)
-        self.description.setMaximumHeight(100)
-        self.description.setFont(QFont("Arial", 11))
-        layout.addWidget(self.description)
-        
-        # Camera widget
-        self.camera_widget = CameraWidget()
-        layout.addWidget(self.camera_widget)
-        
-        # Control buttons
-        button_layout = QHBoxLayout()
-        
-        self.start_practice_btn = QPushButton("Start Practice")
-        self.start_practice_btn.setFont(QFont("Arial", 12))
-        self.start_practice_btn.clicked.connect(self.start_practice)
-        button_layout.addWidget(self.start_practice_btn)
-        
-        self.cast_spell_btn = QPushButton("Cast Spell (Hold to Record)")
-        self.cast_spell_btn.setFont(QFont("Arial", 12))
-        self.cast_spell_btn.setEnabled(False)
-        self.cast_spell_btn.pressed.connect(self.start_recording)
-        self.cast_spell_btn.released.connect(self.stop_recording)
-        button_layout.addWidget(self.cast_spell_btn)
-        
-        layout.addLayout(button_layout)
-        
-        # Feedback label
-        self.feedback_label = QLabel("")
-        self.feedback_label.setFont(QFont("Arial", 11))
-        self.feedback_label.setWordWrap(True)
-        self.feedback_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.feedback_label.setStyleSheet("padding: 10px; background-color: #f0f0f0; border-radius: 5px;")
-        layout.addWidget(self.feedback_label)
-        
-        self.setLayout(layout)
-    
-    def set_spell(self, spell_type: SpellType):
-        """Set the current spell to practice."""
-        self.current_spell = spell_type
-        
-        spell_info = {
-            SpellType.LUMOS: {
-                "name": "Lumos",
-                "description": "Lumos creates light at the tip of your wand. Say 'Lumos' clearly and point your wand forward."
-            },
-            SpellType.ACCIO: {
-                "name": "Accio",
-                "description": "Accio summons objects to you. Say 'Accio' and point your wand at the object you want to summon."
-            },
-            SpellType.WINGARDIUM_LEVIOSA: {
-                "name": "Wingardium Leviosa",
-                "description": "Wingardium Leviosa makes objects float. Say 'Wingardium Leviosa' (it's Levi-O-sa, not Levio-SA!) and wave your wand."
+        layout.setSpacing(30)
+        layout.setContentsMargins(120, 80, 120, 80)
+
+        self.progress_label = QLabel("")
+        self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.progress_label.setFont(QFont("Arial", 16, QFont.Weight.DemiBold))
+        self.progress_label.setStyleSheet("color: #f8f9fa;")
+        layout.addWidget(self.progress_label)
+
+        self.message_label = QLabel("")
+        self.message_label.setWordWrap(True)
+        self.message_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.message_label.setFont(QFont("Arial", 28, QFont.Weight.Bold))
+        self.message_label.setStyleSheet("""
+            color: #f8f9fa;
+            background-color: rgba(0, 0, 0, 0.45);
+            padding: 35px;
+            border-radius: 18px;
+        """)
+        layout.addWidget(self.message_label, stretch=1)
+
+        self.progress_opacity = QGraphicsOpacityEffect(self)
+        self.progress_label.setGraphicsEffect(self.progress_opacity)
+        self.progress_opacity.setOpacity(0)
+
+        self.message_opacity = QGraphicsOpacityEffect(self)
+        self.message_label.setGraphicsEffect(self.message_opacity)
+        self.message_opacity.setOpacity(0)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch()
+
+        self.next_button = QPushButton("Next")
+        self.next_button.setFont(QFont("Arial", 16, QFont.Weight.Bold))
+        self.next_button.setMinimumWidth(200)
+        self.next_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.next_button.setStyleSheet("""
+            QPushButton {
+                background-color: #f8f9fa;
+                color: #5e1a1a;
+                border-radius: 10px;
+                padding: 14px 24px;
             }
-        }
-        
-        info = spell_info[spell_type]
-        self.spell_title.setText(info["name"])
-        self.description.setText(info["description"])
-        self.feedback_label.setText("")
-        self.practice_started = False
-        self.start_practice_btn.setEnabled(True)
-        self.cast_spell_btn.setEnabled(False)
-    
-    def start_practice(self):
-        """Start practice mode."""
-        try:
-            # Initialize voice verifier
-            api_key = os.getenv('GOOGLE_API_KEY')
-            if not api_key:
-                QMessageBox.warning(
-                    self,
-                    "API Key Missing",
-                    "Please set GOOGLE_API_KEY environment variable."
-                )
-                return
-            
-            self.voice_verifier = VoiceVerifier(api_key=api_key)
-            
-            # Start camera
-            self.camera_widget.start_camera()
-            
-            self.practice_started = True
-            self.start_practice_btn.setEnabled(False)
-            self.cast_spell_btn.setEnabled(True)
-            self.feedback_label.setText("Practice mode started! Hold the 'Cast Spell' button and speak the spell.")
-            
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to start practice: {str(e)}")
-    
-    def start_recording(self):
-        """Start recording audio."""
-        if not self.practice_started or not self.voice_verifier:
-            return
-        
-        self.feedback_label.setText("Recording... Speak the spell now!")
-        self.cast_spell_btn.setEnabled(False)
-    
-    def stop_recording(self):
-        """Stop recording and verify spell."""
-        if not self.practice_started or not self.voice_verifier:
-            return
-        
-        self.feedback_label.setText("Verifying with Hermione...")
-        
-        # Get spell name
-        spell_names = {
-            SpellType.LUMOS: "Lumos",
-            SpellType.ACCIO: "Accio",
-            SpellType.WINGARDIUM_LEVIOSA: "Wingardium Leviosa"
-        }
-        target_spell = spell_names[self.current_spell]
-        
-        # Run verification in thread
-        self.verification_thread = SpellVerificationThread(self.voice_verifier, target_spell)
-        self.verification_thread.verification_complete.connect(self.on_verification_complete)
-        self.verification_thread.start()
-    
-    def on_verification_complete(self, is_correct: bool, feedback: str):
-        """Handle verification result."""
-        self.cast_spell_btn.setEnabled(True)
-        self.feedback_label.setText(feedback)
-        
-        if is_correct:
-            # Activate spell effect
-            spell_engine = self.camera_widget.get_spell_engine()
-            # Activate spell - wand position will be updated in the camera thread
-            # Pass None to use center as default, update loop will position it correctly
-            spell_engine.activate_spell(self.current_spell, None)
-            self.feedback_label.setStyleSheet(
-                "padding: 10px; background-color: #d4edda; border-radius: 5px; color: #155724;"
-            )
+            QPushButton:hover {
+                background-color: #ffffff;
+            }
+        """)
+        self.next_button.clicked.connect(self.advance_message)
+        button_row.addWidget(self.next_button)
+
+        button_row.addStretch()
+        layout.addLayout(button_row)
+
+        self.setLayout(layout)
+
+    def start_sequence(self):
+        self.current_index = 0
+        self.update_message(initial=True)
+
+    def update_message(self, initial=False):
+        total = len(self.messages)
+        next_progress = f"{self.current_index + 1} / {total}"
+        next_message = self.messages[self.current_index]
+
+        if initial:
+            self.progress_label.setText(next_progress)
+            self.message_label.setText(next_message)
+            self.progress_opacity.setOpacity(0)
+            self.message_opacity.setOpacity(0)
+            self._fade_in_effect(self.progress_opacity, duration=400)
+            self._fade_in_effect(self.message_opacity, duration=600)
         else:
-            self.feedback_label.setStyleSheet(
-                "padding: 10px; background-color: #f8d7da; border-radius: 5px; color: #721c24;"
-            )
-    
-    def go_back(self):
-        """Return to spell selection."""
-        if self.camera_widget:
-            self.camera_widget.stop_camera()
-        if self.voice_verifier:
-            self.voice_verifier.release()
-        if self.parent_window:
-            self.parent_window.show_spell_selection()
+            self._animate_label_update(self.progress_label, self.progress_opacity, next_progress)
+            self._animate_label_update(self.message_label, self.message_opacity, next_message)
+
+        if self.current_index == total - 1:
+            self.next_button.setText("Begin")
+        else:
+            self.next_button.setText("Next")
+
+    def advance_message(self):
+        if self.current_index < len(self.messages) - 1:
+            self.current_index += 1
+            self.update_message()
+        else:
+            if self.parent_window:
+                self.parent_window.start_story_mode()
+
+    def _fade_in_effect(self, effect: QGraphicsOpacityEffect, duration: int = 450):
+        animation = QPropertyAnimation(effect, b"opacity", self)
+        animation.setDuration(duration)
+        animation.setStartValue(effect.opacity())
+        animation.setEndValue(1.0)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.start()
+        self._track_animation(animation)
+
+    def _animate_label_update(
+        self,
+        label: QLabel,
+        effect: QGraphicsOpacityEffect,
+        new_text: str,
+        fade_out_duration: int = 220,
+        fade_in_duration: int = 420
+    ):
+        if effect is None:
+            label.setText(new_text)
+            return
+
+        fade_out = QPropertyAnimation(effect, b"opacity", self)
+        fade_out.setDuration(fade_out_duration)
+        fade_out.setStartValue(effect.opacity())
+        fade_out.setEndValue(0.0)
+        fade_out.setEasingCurve(QEasingCurve.Type.InOutQuad)
+
+        fade_in = QPropertyAnimation(effect, b"opacity", self)
+        fade_in.setDuration(fade_in_duration)
+        fade_in.setStartValue(0.0)
+        fade_in.setEndValue(1.0)
+        fade_in.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        def start_fade_in():
+            label.setText(new_text)
+            fade_in.start()
+
+        fade_out.finished.connect(start_fade_in)
+
+        self._track_animation(fade_out)
+        self._track_animation(fade_in)
+
+        if effect.opacity() <= 0.05:
+            start_fade_in()
+        else:
+            fade_out.start()
+
+    def _track_animation(self, animation: QPropertyAnimation):
+        if animation is None:
+            return
+
+        self.active_animations.append(animation)
+
+        def cleanup():
+            if animation in self.active_animations:
+                self.active_animations.remove(animation)
+
+        animation.finished.connect(cleanup)
 
 
 class MainWindow(QMainWindow):
     """Main application window."""
-    
+
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Hoggle - Learn Spells with Hermione")
-        self.setMinimumSize(800, 600)
-        
-        # Create stacked widget for screens
+        self.setWindowTitle("hoggle - hogwarts for muggle")
+        self.setMinimumSize(1024, 768)
+
         self.stacked_widget = QStackedWidget()
         self.setCentralWidget(self.stacked_widget)
+
+        self.main_menu_screen = MainMenuScreen(self)
+        self.intro_sequence_screen = IntroSequenceScreen(self)
+        self.story_screen = StoryScreen(self)
+
+        self.story_screen.finished.connect(self.show_main_menu)
+
+        self.stacked_widget.addWidget(self.main_menu_screen)
+        self.stacked_widget.addWidget(self.intro_sequence_screen)
+        self.stacked_widget.addWidget(self.story_screen)
+
+        # Background Music Setup
+        self.player = QMediaPlayer()
+        self.audio_output = QAudioOutput()
+        self.player.setAudioOutput(self.audio_output)
         
-        # Create screens
-        self.spell_selection_screen = SpellSelectionScreen(self)
-        self.practice_screen = PracticeScreen(self)
+        # Set volume (0.0 to 1.0)
+        self.audio_output.setVolume(0.3)
         
-        # Add screens to stack
-        self.stacked_widget.addWidget(self.spell_selection_screen)
-        self.stacked_widget.addWidget(self.practice_screen)
+        # Load music file
+        music_path = os.path.join(os.getcwd(), "assets", "sound", "background-music.mp3")
+        if os.path.exists(music_path):
+            self.player.setSource(QUrl.fromLocalFile(music_path))
+            self.player.setLoops(QMediaPlayer.Loops.Infinite)
+            self.player.play()
+        else:
+            print(f"Warning: Music file not found at {music_path}")
+
+        self.show_main_menu()
+
+    def show_main_menu(self):
+        """Show welcome screen."""
+        # Resume music if it was paused
+        if self.player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+            self.player.play()
         
-        # Show initial screen
-        self.show_spell_selection()
-    
-    def show_spell_selection(self):
-        """Show spell selection screen."""
-        self.stacked_widget.setCurrentWidget(self.spell_selection_screen)
-    
-    def show_practice_screen(self, spell_type: SpellType):
-        """Show practice screen for a spell."""
-        self.practice_screen.set_spell(spell_type)
-        self.stacked_widget.setCurrentWidget(self.practice_screen)
-    
+        self.stacked_widget.setCurrentWidget(self.main_menu_screen)
+
+    def show_intro_sequence(self):
+        """Display intro messages before spells."""
+        self.intro_sequence_screen.start_sequence()
+        self.stacked_widget.setCurrentWidget(self.intro_sequence_screen)
+
+    def start_story_mode(self):
+        """Start the spell guidance story."""
+        # Pause music when entering practice mode (camera active)
+        self.player.pause()
+        
+        self.stacked_widget.setCurrentWidget(self.story_screen)
+        self.story_screen.start_game()
+
     def closeEvent(self, event):
         """Clean up on close."""
-        if self.practice_screen:
-            self.practice_screen.camera_widget.stop_camera()
-            if self.practice_screen.voice_verifier:
-                self.practice_screen.voice_verifier.release()
+        if self.story_screen:
+            self.story_screen.exit_game()
         super().closeEvent(event)
-

@@ -18,7 +18,7 @@ def main():
         print("  export GOOGLE_API_KEY='your-api-key-here'")
     
     window = MainWindow()
-    window.show()
+    window.showMaximized()
     
     sys.exit(app.exec())
 

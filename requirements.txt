@@ -8,4 +8,4 @@ numpy>=1.24.0
 Pillow>=10.0.0
 requests>=2.31.0
 trimesh>=3.20.0
-
+elevenlabs>=0.2.24

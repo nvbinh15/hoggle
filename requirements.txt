@@ -1,0 +1,11 @@
+PyQt6>=6.6.0
+opencv-python>=4.8.0
+mediapipe>=0.10.0
+google-genai==1.52.0
+sounddevice>=0.4.6
+gTTS>=2.5.0
+numpy>=1.24.0
+Pillow>=10.0.0
+requests>=2.31.0
+trimesh>=3.20.0
+
